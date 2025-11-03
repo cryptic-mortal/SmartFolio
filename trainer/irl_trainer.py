@@ -45,13 +45,26 @@ class MaxEntIRL:
             agent_rewards = self._calculate_rewards(agent_trajectories, device)
 
             # 最大熵IRL损失
-            loss = -(expert_rewards.mean() - torch.logsumexp(agent_rewards, dim=0))
+            # Original: loss = -(expert_rewards.mean() - torch.logsumexp(agent_rewards, dim=0))
+            # Reformulated to always show meaningful values:
+            expert_mean = expert_rewards.mean()
+            agent_logsumexp = torch.logsumexp(agent_rewards, dim=0)
+            
+            # The actual loss (can be negative, which is OK)
+            loss = -(expert_mean - agent_logsumexp)
+            
+            # For logging: show the gap (always interpretable)
+            reward_gap = expert_mean - agent_logsumexp
 
             # 反向传播
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-            print(f"Train IRL Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+            
+            # Better logging: show both loss and interpretable metrics
+            print(f"Train IRL Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}, "
+                  f"Expert: {expert_mean.item():.4f}, Agent: {agent_logsumexp.item():.4f}, "
+                  f"Gap: {reward_gap.item():.4f}")
 
     def _sample_trajectories(self, env, model, batch_size, device):
         trajectories = []
@@ -269,7 +282,7 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
         expert_trajectories = generate_expert_trajectories_ga(
             args, 
             train_loader.dataset, 
-            num_trajectories=100,
+            num_trajectories=1000,
             risk_category='mixed',  # Use all risk categories
             ga_generations=getattr(args, 'ga_generations', 30)
         )
@@ -334,7 +347,8 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
             print(f"Training RL agent for {rl_timesteps} timesteps...")
             trained_model = model.learn(total_timesteps=rl_timesteps)
             # 可选评估：留给环境统计输出
-    
+            mean_reward, std_reward = evaluate_policy(trained_model, env_train, n_eval_episodes=5)
+            print(f"Evaluation after RL training: Mean Reward = {mean_reward:.4f}, Std Reward = {std_reward:.4f}")
     # Save reward network checkpoint
     try:
         save_dir = getattr(args, 'save_dir', './checkpoints')
