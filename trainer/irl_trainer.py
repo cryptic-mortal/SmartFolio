@@ -112,13 +112,20 @@ class MaxEntIRL:
 class MultiRewardNetwork(nn.Module):
     def __init__(self, input_dim, num_stocks, hidden_dim=64,
                  ind_yn=False, pos_yn=False, neg_yn=False,
-                 use_drawdown=True, dd_kappa=0.05, dd_tau=0.01):
+                 use_drawdown=True, dd_kappa=0.05, dd_tau=0.01,
+                 dd_base_weight=1.0, dd_risk_factor=1.0):
         super().__init__()
         self.num_stocks = num_stocks
         self.input_dim = input_dim
         self.use_drawdown = use_drawdown
         self.dd_kappa = dd_kappa  # Ignore drawdowns below this threshold
         self.dd_tau = dd_tau  # Smoothness parameter for SoftPlus
+        self.dd_base_weight = dd_base_weight  # β_base for drawdown
+        self.dd_risk_factor = dd_risk_factor  # k in β_dd(ρ) = β_base * (1 + k*(1-ρ))
+        
+        # Risk-adaptive kappa (optional, can be enabled later)
+        self.dd_kappa_max = 0.10  # Conservative users tolerate less drawdown
+        self.dd_kappa_min = 0.02  # Aggressive users tolerate more drawdown
         
         # Calculate dimensions for flattened format
         # Observation: [ind_matrix, pos_matrix, neg_matrix, features]
@@ -155,10 +162,11 @@ class MultiRewardNetwork(nn.Module):
             self.num_rewards += 1  # Add drawdown component
         self.weights = nn.Parameter(torch.ones(self.num_rewards))
 
-    def forward(self, state, action, wealth_info=None):
+    def forward(self, state, action, wealth_info=None, risk_score=None):
         # state is flattened: [batch, obs_len] where obs_len = 3*num_stocks^2 + num_stocks*input_dim
         # action is multi-hot: [batch, num_stocks]
         # wealth_info: [batch, 2] containing [W_current, W_peak]
+        # risk_score: [batch, 1] or scalar, ρ ∈ [0, 1] where 0=conservative, 1=aggressive
         
         # Handle single sample case
         if state.dim() == 1:
@@ -168,6 +176,18 @@ class MultiRewardNetwork(nn.Module):
         if wealth_info is not None and wealth_info.dim() == 1:
             wealth_info = wealth_info.unsqueeze(0)
         
+        batch_size = state.shape[0]
+        
+        # Default risk score if not provided (moderate = 0.5)
+        if risk_score is None:
+            risk_score = torch.ones(batch_size, 1, device=state.device) * 0.5
+        elif isinstance(risk_score, (int, float)):
+            risk_score = torch.ones(batch_size, 1, device=state.device) * risk_score
+        elif risk_score.dim() == 0:
+            risk_score = risk_score.unsqueeze(0).unsqueeze(0).expand(batch_size, 1)
+        elif risk_score.dim() == 1:
+            risk_score = risk_score.unsqueeze(1)
+        
         # 分割特征
         ptr = 0
         features = {}
@@ -176,15 +196,18 @@ class MultiRewardNetwork(nn.Module):
                 features[feat] = state[..., ptr:ptr + dim]  # [B, dim]
                 ptr += dim
 
-        # 特征-动作融合
-        rewards = []
+        # 特征-动作融合 (IRL component)
+        irl_rewards = []
         for i, (feat, data) in enumerate(features.items()):
             # data: [B, dim], action: [B, num_stocks]
             fused = torch.cat([data, action], dim=-1)  # [B, dim + num_stocks]
             encoded = self.encoders[feat](fused)  # [B, hidden_dim]
-            rewards.append(encoded.mean(dim=-1, keepdim=True))  # [B, 1]
+            irl_rewards.append(encoded.mean(dim=-1, keepdim=True))  # [B, 1]
 
-        # Drawdown penalty component
+        # Combine IRL rewards
+        R_irl = sum(w * r for w, r in zip(F.softmax(self.weights[:-1] if self.use_drawdown else self.weights, dim=0), irl_rewards))
+
+        # Drawdown penalty component (risk-adaptive)
         if self.use_drawdown and wealth_info is not None:
             # wealth_info: [B, 2] = [W_current, W_peak]
             W_current = wealth_info[:, 0:1]  # [B, 1]
@@ -194,16 +217,24 @@ class MultiRewardNetwork(nn.Module):
             epsilon = 1e-8
             dd = (W_peak - W_current) / torch.clamp(W_peak, min=epsilon)  # [B, 1]
             
+            # Risk-adaptive kappa (optional): κ(ρ) = κ_max - (κ_max - κ_min) * ρ
+            # Conservative (ρ=0) → high κ (ignore small drawdowns)
+            # Aggressive (ρ=1) → low κ (penalize even small drawdowns)
+            kappa_adaptive = self.dd_kappa_max - (self.dd_kappa_max - self.dd_kappa_min) * risk_score
+            
             # Smooth penalty: -SoftPlus((dd - kappa) / tau)
-            # SoftPlus(x) = log(1 + exp(x)) ≈ smooth max(0, x)
-            dd_scaled = (dd - self.dd_kappa) / self.dd_tau
+            dd_scaled = (dd - kappa_adaptive) / self.dd_tau
             R_dd = -F.softplus(dd_scaled)  # [B, 1]
             
-            rewards.append(R_dd)
-
-        # 加权奖励
-        weighted = sum(w * r for w, r in zip(F.softmax(self.weights, dim=0), rewards))
-        return weighted
+            # Risk-adaptive weight: β_dd(ρ) = β_base * (1 + k * (1 - ρ))
+            # Conservative (ρ=0) → β_dd = β_base * (1 + k) = 2x penalty
+            # Aggressive (ρ=1) → β_dd = β_base * 1 = baseline penalty
+            beta_dd = self.dd_base_weight * (1 + self.dd_risk_factor * (1 - risk_score))
+            
+            # Total reward: R_total = R_irl + β_dd(ρ) * R_dd
+            return R_irl + beta_dd * R_dd
+        
+        return R_irl
 
 
 def process_data(data_dict, device="cuda:0"):
@@ -283,7 +314,7 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
             args, 
             train_loader.dataset, 
             num_trajectories=1000,
-            risk_category='mixed',  # Use all risk categories
+            risk_category='conservative',  # Use all risk categories
             ga_generations=getattr(args, 'ga_generations', 30)
         )
     else:
@@ -303,11 +334,15 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
     if not args.multi_reward:
         reward_net = RewardNetwork(input_dim=obs_len+1).to(args.device)
     else:
-        reward_net = MultiRewardNetwork(input_dim=args.input_dim,
-                                        num_stocks=args.num_stocks,
-                                        ind_yn=args.ind_yn,
-                                        pos_yn=args.pos_yn,
-                                        neg_yn=args.neg_yn).to(args.device)
+        reward_net = MultiRewardNetwork(
+            input_dim=args.input_dim,
+            num_stocks=args.num_stocks,
+            ind_yn=args.ind_yn,
+            pos_yn=args.pos_yn,
+            neg_yn=args.neg_yn,
+            dd_base_weight=getattr(args, 'dd_base_weight', 1.0),
+            dd_risk_factor=getattr(args, 'dd_risk_factor', 1.0)
+        ).to(args.device)
     # Optional: resume reward network
     if getattr(args, 'reward_net_path', None) and os.path.exists(args.reward_net_path):
         try:

@@ -90,6 +90,10 @@ if __name__ == '__main__':
     parser.add_argument("--irl_epochs", type=int, default=50, help="Number of IRL training epochs")
     parser.add_argument("--rl_timesteps", type=int, default=10000, help="Number of RL timesteps for training")
     parser.add_argument("--ga_generations", type=int, default=30, help="Number of GA generations for expert generation")
+    # Risk-adaptive reward parameters
+    parser.add_argument("--risk_score", type=float, default=0.5, help="User risk score: 0=conservative, 1=aggressive")
+    parser.add_argument("--dd_base_weight", type=float, default=1.0, help="Base weight for drawdown penalty")
+    parser.add_argument("--dd_risk_factor", type=float, default=1.0, help="Risk factor k in β_dd(ρ) = β_base*(1+k*(1-ρ))")
     args = parser.parse_args()
 
     # debug 用参数设置
@@ -116,6 +120,10 @@ if __name__ == '__main__':
     args.irl_epochs = getattr(args, 'irl_epochs', 50)
     args.rl_timesteps = getattr(args, 'rl_timesteps', 10000)
     args.ga_generations = getattr(args, 'ga_generations', 30)
+    # Risk-adaptive reward parameters
+    args.risk_score = getattr(args, 'risk_score', 0.5)
+    args.dd_base_weight = getattr(args, 'dd_base_weight', 1.0)
+    args.dd_risk_factor = getattr(args, 'dd_risk_factor', 1.0)
     # ensure save dir
     os.makedirs(args.save_dir, exist_ok=True)
 
