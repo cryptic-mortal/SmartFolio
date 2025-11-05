@@ -114,7 +114,42 @@ if __name__ == '__main__':
     args.batch_size = 64
     args.max_epochs = 10
     args.seed = 123
-    args.input_dim = 6
+    # Auto-detect input_dim (number of per-stock features) from a sample file
+    try:
+        data_dir_detect = f'dataset_default/data_train_predict_{args.market}/{args.horizon}_{args.relation_type}/'
+        sample_files_detect = [f for f in os.listdir(data_dir_detect) if f.endswith('.pkl')]
+        if sample_files_detect:
+            import pickle
+            sample_path_detect = os.path.join(data_dir_detect, sample_files_detect[0])
+            with open(sample_path_detect, 'rb') as f:
+                sample_data_detect = pickle.load(f)
+            # Expect features shaped [T, num_stocks, input_dim]
+            feats = sample_data_detect.get('features')
+            if feats is not None:
+                # Handle both torch tensors and numpy arrays
+                try:
+                    shape = feats.shape
+                except Exception:
+                    # If it's a torch tensor wrapped differently
+                    try:
+                        shape = feats.size()
+                    except Exception:
+                        shape = None
+                if shape and len(shape) >= 2:
+                    args.input_dim = shape[-1]
+                    print(f"Auto-detected input_dim: {args.input_dim}")
+                else:
+                    print("Warning: could not determine input_dim from sample; falling back to 6")
+                    args.input_dim = 6
+            else:
+                print("Warning: 'features' not found in sample; falling back to input_dim=6")
+                args.input_dim = 6
+        else:
+            print(f"Warning: No sample files found in {data_dir_detect}; falling back to input_dim=6")
+            args.input_dim = 6
+    except Exception as e:
+        print(f"Warning: input_dim auto-detection failed ({e}); falling back to 6")
+        args.input_dim = 6
     args.ind_yn = True
     args.pos_yn = True
     args.neg_yn = True
