@@ -205,7 +205,7 @@ if __name__ == '__main__':
                 raise ValueError(f"No pickle files found in {data_dir} to determine num_stocks")
         else:
             raise ValueError(f"Unknown market {args.market} and data directory {data_dir} does not exist")
-
+    print("market:", args.market, "num_stocks:", args.num_stocks)
     trained_model = train_predict(args, predict_dt='2024-12-30')
     # save PPO model checkpoint
     try:
