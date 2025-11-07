@@ -438,6 +438,25 @@ def main():
     os.makedirs(DATASET_DEFAULT_ROOT, exist_ok=True)
     df_raw.to_csv(org_out, index=False)
 
+    # --- Create an index CSV (equal-weighted average daily return) for model_predict ---
+    # model_predict expects ./dataset/index_data/{market}_index_2024.csv with columns ['datetime','daily_return']
+    try:
+        idx_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset", "index_data"))
+        os.makedirs(idx_dir, exist_ok=True)
+        # Use prev_close from df_raw to compute per-ticker daily return
+        df_idx = df_raw.copy()
+        if "prev_close" in df_idx.columns:
+            df_idx["daily_return"] = df_idx["close"] / df_idx["prev_close"] - 1
+            df_idx_summary = df_idx.groupby("dt")["daily_return"].mean().reset_index()
+            df_idx_summary = df_idx_summary.rename(columns={"dt": "datetime"})
+            index_out = os.path.join(idx_dir, f"{args.market}_index.csv")
+            df_idx_summary.to_csv(index_out, index=False)
+        else:
+            # If prev_close missing (shouldn't happen), skip index creation but warn
+            print("Warning: prev_close missing in raw data; skipping index CSV creation.")
+    except Exception as e:
+        print(f"Warning: failed to create index CSV: {e}")
+
     # 2) Labels and preprocessing
     df_lbl = get_label(df_raw, horizon=args.horizon)
     df_roll = cal_rolling_mean_std(df_lbl, cal_cols=["close", "volume"], lookback=5)
