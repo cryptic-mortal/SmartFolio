@@ -4,6 +4,7 @@
 dataset_default/
 logs/
 dataset/
+checkpoints/
 
 # Python caches and compiled artifacts
 __pycache__/
