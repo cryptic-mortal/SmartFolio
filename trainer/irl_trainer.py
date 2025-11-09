@@ -15,6 +15,10 @@ from trainer.evaluation_utils import (
     create_metric_record,
     persist_metrics,
 )
+from utils.ticker_mapping import (
+    get_ticker_mapping_for_period,
+    load_ticker_mapping,
+)
 
 
 class RewardNetwork(nn.Module):
@@ -293,9 +297,18 @@ def model_predict(args, model, test_loader, split: str = "test"):
     df_benchmark = df_benchmark[(df_benchmark['datetime'] >= args.test_start_date) &
                                 (df_benchmark['datetime'] <= args.test_end_date)]
     benchmark_return = df_benchmark['daily_return']
+    
+    # Load ticker mappings for the test period
+    ticker_map = get_ticker_mapping_for_period(
+        args.market,
+        args.test_start_date,
+        args.test_end_date,
+        base_dir="dataset_default"
+    )
 
     records = []
     env_snapshots = []
+    all_weights_data = []  # Collect all weights for CSV export
 
     for batch_idx, data in enumerate(test_loader):
         corr, ts_features, features, ind, pos, neg, labels, pyg_data, mask = process_data(data, device=args.device)
@@ -326,10 +339,58 @@ def model_predict(args, model, test_loader, split: str = "test"):
         record = create_metric_record(args, split, metrics, batch_idx)
         records.append(record)
         env_snapshots.append((env_test, record["run_id"]))
+        
+        # Collect weights data from the environment
+        weights_array = env_test.get_weights_history()
+        if weights_array.size > 0:
+            # Get dates for this batch
+            dates = list(ticker_map.keys()) if ticker_map else None
+            if dates and len(dates) >= len(weights_array):
+                dates = dates[:len(weights_array)]
+                
+                # For each timestep, create weight records
+                for step_idx, (date, weights) in enumerate(zip(dates, weights_array)):
+                    tickers = ticker_map.get(date, None)
+                    if tickers and len(tickers) == len(weights):
+                        for ticker, weight in zip(tickers, weights):
+                            if weight > 0.0001:  # Only save non-negligible allocations
+                                all_weights_data.append({
+                                    'run_id': record["run_id"],
+                                    'batch': batch_idx,
+                                    'date': date,
+                                    'step': step_idx,
+                                    'ticker': ticker,
+                                    'weight': weight,
+                                    'weight_pct': weight * 100
+                                })
+        
         env_vec.close()
 
     log_info = persist_metrics(records, env_snapshots, args, split)
     summary = aggregate_metric_records(records)
+    
+    # Save portfolio weights to CSV
+    if all_weights_data and log_info and 'log_dir' in log_info:
+        log_dir = log_info['log_dir']
+        timestamp_label = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        weights_csv_path = os.path.join(log_dir, f"{split}_weights_{timestamp_label}.csv")
+        
+        df_weights = pd.DataFrame(all_weights_data)
+        df_weights.to_csv(weights_csv_path, index=False)
+        print(f"Saved portfolio weights to: {weights_csv_path}")
+        log_info['weights_csv'] = weights_csv_path
+        
+        # Also save a summary showing average weights per ticker
+        summary_weights = df_weights.groupby('ticker').agg({
+            'weight': ['mean', 'std', 'min', 'max', 'count']
+        }).round(6)
+        summary_weights.columns = ['avg_weight', 'std_weight', 'min_weight', 'max_weight', 'num_days']
+        summary_weights = summary_weights.sort_values('avg_weight', ascending=False)
+        
+        summary_path = os.path.join(log_dir, f"{split}_weights_summary_{timestamp_label}.csv")
+        summary_weights.to_csv(summary_path)
+        print(f"Saved weights summary to: {summary_path}")
+        log_info['weights_summary'] = summary_path
 
     if summary:
         print(f"Evaluation summary for split='{split}': {summary}")
@@ -367,6 +428,7 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
             risk_category='conservative',
             ga_generations=getattr(args, 'ga_generations', 30)
         )
+
     else:  # 'heuristic' or fallback
         print("\n" + "="*70)
         print("Using Original Heuristic Expert Generation")

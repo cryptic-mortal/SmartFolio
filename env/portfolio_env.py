@@ -21,6 +21,10 @@ class StockPortfolioEnv(gym.Env):
         self.daily_return_s = [0.0]
         self.num_stocks = returns.shape[-1]
         self.benchmark_return = benchmark_return
+        
+        # Track portfolio weights history
+        self.weights_history = []  # List of weight vectors at each step
+        self.dates = []  # List of dates/step indices
 
         self.corr_tensor = corr
         self.ts_features_tensor = ts_features
@@ -119,6 +123,8 @@ class StockPortfolioEnv(gym.Env):
         self.peak_value = 1.0  # Reset peak value
         self.net_value_s = [1.0]
         self.daily_return_s = [0.0]
+        self.weights_history = []  # Reset weights history
+        self.dates = []  # Reset dates
         self.load_observation(ind_yn=self.ind_yn, pos_yn=self.pos_yn, neg_yn=self.neg_yn)
         return self.observation
 
@@ -153,6 +159,10 @@ class StockPortfolioEnv(gym.Env):
             # Softmax normalization: w_i = exp(a_i) / sum(exp(a_j))
             exp_actions = np.exp(action_scores - np.max(action_scores))  # Numerical stability
             weights = exp_actions / exp_actions.sum()
+            
+            # Store weights for this step
+            self.weights_history.append(weights.copy())
+            self.dates.append(self.current_step)
             
             # Optional: Apply concentration penalty or top-K constraint
             # For now, allow full continuous allocation
@@ -200,6 +210,41 @@ class StockPortfolioEnv(gym.Env):
         df_daily_return = pd.DataFrame(self.daily_return_s)
         df_daily_return.columns = ["daily_return"]
         return df_daily_return
+    
+    def get_weights_history(self):
+        """Return portfolio weights history as numpy array.
+        
+        Returns:
+            np.ndarray: Shape [num_steps, num_stocks] containing portfolio weights
+        """
+        if not self.weights_history:
+            return np.array([])
+        return np.array(self.weights_history)
+    
+    def get_weights_dataframe(self, tickers=None):
+        """Return portfolio weights as a DataFrame.
+        
+        Args:
+            tickers: Optional list of ticker symbols. If None, uses stock indices.
+            
+        Returns:
+            pd.DataFrame: Columns are tickers/indices, rows are time steps
+        """
+        weights_array = self.get_weights_history()
+        if weights_array.size == 0:
+            return pd.DataFrame()
+        
+        if tickers is not None:
+            if len(tickers) != weights_array.shape[1]:
+                raise ValueError(f"Number of tickers ({len(tickers)}) doesn't match "
+                               f"number of stocks ({weights_array.shape[1]})")
+            columns = tickers
+        else:
+            columns = [f"stock_{i}" for i in range(weights_array.shape[1])]
+        
+        df = pd.DataFrame(weights_array, columns=columns)
+        df.insert(0, 'step', self.dates)
+        return df
 
     def evaluate(self):
         arr, avol, sp, mdd, cr, ir = (0, 0, 0, 0, 0, 0)

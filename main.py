@@ -65,18 +65,40 @@ def fine_tune_month(args, manifest_path="monthly_manifest.json", bookkeeping_pat
     with open(manifest_file, "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
 
-    shards = manifest.get("monthly_shards", [])
+    shards = manifest.get("monthly_shards", {})
     if not shards:
         raise ValueError("Manifest does not contain any 'monthly_shards'")
 
+    # Support two manifest formats:
+    # 1) A list of shard dicts (legacy)
+    # 2) A dict mapping month_label -> shard_path (current generator)
+    shards_list = []
+    if isinstance(shards, dict):
+        # Convert mapping into a list of shard-like dicts. We infer a 'processed'
+        # flag from manifest['last_fine_tuned_month'] when available.
+        last_ft = manifest.get("last_fine_tuned_month")
+        for idx, (month_label, rel_path) in enumerate(sorted(shards.items())):
+            shard = {
+                "month": month_label,
+                "shard_path": rel_path,
+            }
+            # mark processed if this month equals last_fine_tuned_month
+            shard["processed"] = bool(last_ft == month_label)
+            shards_list.append(shard)
+    else:
+        # Assume it's already a list of shard dicts
+        shards_list = list(shards)
+
     unprocessed = []
-    for idx, shard in enumerate(shards):
-        if not shard.get("processed", False):
-            try:
-                month_label, month_start, month_end = _infer_month_dates(shard)
-            except ValueError:
-                continue
-            unprocessed.append((idx, shard, month_label, month_start, month_end))
+    for idx, shard in enumerate(shards_list):
+        if shard.get("processed", False):
+            continue
+        try:
+            month_label, month_start, month_end = _infer_month_dates(shard)
+        except ValueError:
+            # Can't infer dates from this shard, skip it
+            continue
+        unprocessed.append((idx, shard, month_label, month_start, month_end))
 
     if not unprocessed:
         raise RuntimeError("No unprocessed monthly shards available for fine-tuning")
@@ -359,7 +381,7 @@ if __name__ == '__main__':
             raise ValueError(f"Unknown market {args.market} and data directory {data_dir} does not exist")
     print("market:", args.market, "num_stocks:", args.num_stocks)
     if args.run_monthly_fine_tune:
-        checkpoint = fine_tune_month(args)
+        checkpoint = fine_tune_month(args, manifest_path="dataset_default/data_train_predict_custom/1_corr/monthly_manifest.json")
         print(f"Monthly fine-tuning complete. Checkpoint: {checkpoint}")
     else:
         trained_model = train_predict(args, predict_dt='2024-12-30')
