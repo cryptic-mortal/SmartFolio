@@ -312,21 +312,32 @@ def model_predict(args, model, test_loader, split: str = "test"):
 
     for batch_idx, data in enumerate(test_loader):
         corr, ts_features, features, ind, pos, neg, labels, pyg_data, mask = process_data(data, device=args.device)
-        env_test = StockPortfolioEnv(args=args, corr=corr, ts_features=ts_features, features=features,
-                                     ind=ind, pos=pos, neg=neg,
-                                     returns=labels, pyg_data=pyg_data, benchmark_return=benchmark_return,
-                                     mode="test", ind_yn=args.ind_yn, pos_yn=args.pos_yn, neg_yn=args.neg_yn)
-        env_vec, obs_test = env_test.get_sb_env()
-        env_vec.reset()
+        env_test = StockPortfolioEnv(
+            args=args,
+            corr=corr,
+            ts_features=ts_features,
+            features=features,
+            ind=ind,
+            pos=pos,
+            neg=neg,
+            returns=labels,
+            pyg_data=pyg_data,
+            benchmark_return=benchmark_return,
+            mode="test",
+            ind_yn=args.ind_yn,
+            pos_yn=args.pos_yn,
+            neg_yn=args.neg_yn,
+        )
+
+        obs_test = env_test.reset()
         max_step = len(labels)
 
         for _ in range(max_step):
-            action, _states = model.predict(obs_test)
-            obs_test, rewards, dones, info = env_vec.step(action)
-            if dones[0]:
+            action, _states = model.predict(obs_test, deterministic=True)
+            obs_test, reward, done, info = env_test.step(action)
+            if done:
                 break
 
-        env_instance = env_vec.envs[0]
         arr, avol, sharpe, mdd, cr, ir = env_test.evaluate()
         metrics = {
             "arr": arr,
@@ -342,30 +353,42 @@ def model_predict(args, model, test_loader, split: str = "test"):
         
         # Collect weights data from the environment
         weights_array = env_test.get_weights_history()
+        print("weights array", weights_array)
         if weights_array.size > 0:
-            # Get dates for this batch
-            dates = list(ticker_map.keys()) if ticker_map else None
-            if dates and len(dates) >= len(weights_array):
-                dates = dates[:len(weights_array)]
-                
-                # For each timestep, create weight records
-                for step_idx, (date, weights) in enumerate(zip(dates, weights_array)):
-                    tickers = ticker_map.get(date, None)
-                    if tickers and len(tickers) == len(weights):
-                        for ticker, weight in zip(tickers, weights):
-                            if weight > 0.0001:  # Only save non-negligible allocations
-                                all_weights_data.append({
-                                    'run_id': record["run_id"],
-                                    'batch': batch_idx,
-                                    'date': date,
-                                    'step': step_idx,
-                                    'ticker': ticker,
-                                    'weight': weight,
-                                    'weight_pct': weight * 100
-                                })
-        
-        env_vec.close()
+            num_steps, num_stocks = weights_array.shape
+            date_keys = list(ticker_map.keys()) if ticker_map else []
+            step_labels = getattr(env_test, "dates", list(range(num_steps)))
 
+            for step_idx in range(num_steps):
+                weights = weights_array[step_idx]
+                date_label = date_keys[step_idx] if step_idx < len(date_keys) else None
+
+                tickers = None
+                if date_label:
+                    candidate = ticker_map.get(date_label)
+                    if candidate and len(candidate) == num_stocks:
+                        tickers = candidate
+
+                if tickers is None:
+                    tickers = [f"stock_{i}" for i in range(num_stocks)]
+                    if date_label is None:
+                        date_val = step_labels[step_idx] if step_idx < len(step_labels) else step_idx
+                        date_label = f"step_{date_val}"
+
+                step_value = step_labels[step_idx] if step_idx < len(step_labels) else step_idx
+
+                for ticker, weight in zip(tickers, weights):
+                    if weight > 0.0001:  # Only save non-negligible allocations
+                        all_weights_data.append({
+                            'run_id': record["run_id"],
+                            'batch': batch_idx,
+                            'date': date_label,
+                            'step': step_value,
+                            'ticker': ticker,
+                            'weight': weight,
+                            'weight_pct': weight * 100
+                        })
+        
     log_info = persist_metrics(records, env_snapshots, args, split)
     summary = aggregate_metric_records(records)
     
@@ -529,4 +552,3 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
     apply_promotion_gate(args, candidate_path, final_eval.get("summary"), final_eval.get("log"))
 
     return model
-
