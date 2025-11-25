@@ -19,6 +19,11 @@ from utils.ticker_mapping import (
     get_ticker_mapping_for_period,
     load_ticker_mapping,
 )
+from gen_data.gen_expert_ensemble import (
+    generate_expert_trajectories,
+    load_expert_trajectories,
+    save_expert_trajectories,
+)
 
 
 class RewardNetwork(nn.Module):
@@ -269,6 +274,30 @@ def process_data(data_dict, device="cuda:0"):
            labels, pyg_data, mask
 
 
+def resolve_expert_cache_path(args, risk_score):
+    cache_setting = getattr(args, "expert_cache_path", None)
+    if not cache_setting:
+        return None
+    cache_setting = os.path.expanduser(cache_setting)
+
+    def _default_filename():
+        return (
+            f"experts_{args.market}_{args.train_start_date}_{args.train_end_date}_"
+            f"{args.horizon}_{args.relation_type}_risk{risk_score:.2f}.pkl"
+        )
+
+    is_dir_hint = cache_setting.endswith(os.sep) or os.path.splitext(cache_setting)[1] == ""
+    if os.path.isdir(cache_setting) or is_dir_hint:
+        base_dir = cache_setting.rstrip(os.sep)
+        os.makedirs(base_dir, exist_ok=True)
+        return os.path.join(base_dir, _default_filename())
+
+    base_dir = os.path.dirname(cache_setting)
+    if base_dir:
+        os.makedirs(base_dir, exist_ok=True)
+    return cache_setting
+
+
 # Create a placeholder environment that can later be swapped via model.set_env()
 def create_env_init(args, dataset=None, data_loader=None):
     if data_loader is None:
@@ -437,13 +466,29 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
     print("\n" + "=" * 70)
     print("Using Hybrid Ensemble Expert Generation")
     print("=" * 70)
-    from gen_data.gen_expert_ensemble import generate_expert_trajectories
-    expert_trajectories = generate_expert_trajectories(
-        args,
-        train_loader.dataset,
-        num_trajectories=500,
-        risk_profile=getattr(args, "risk_profile", None),
-    )
+    profile = getattr(args, "risk_profile", None)
+    risk_score_value = profile.get("risk_score", getattr(args, "risk_score", 0.5)) if profile else getattr(args, "risk_score", 0.5)
+    cache_file = resolve_expert_cache_path(args, risk_score_value)
+    expert_trajectories = None
+    if cache_file and os.path.exists(cache_file):
+        try:
+            print(f"Loading cached expert trajectories from {cache_file}")
+            expert_trajectories = load_expert_trajectories(cache_file)
+        except Exception as exc:
+            print(f"Warning: failed to load cached expert trajectories ({exc}); regenerating.")
+
+    if expert_trajectories is None:
+        expert_trajectories = generate_expert_trajectories(
+            args,
+            train_loader.dataset,
+            num_trajectories=500,
+            risk_profile=profile,
+        )
+        if cache_file:
+            try:
+                save_expert_trajectories(expert_trajectories, cache_file)
+            except Exception as exc:
+                print(f"Warning: could not save expert trajectories to {cache_file}: {exc}")
 
     # --- Initialize the IRL reward network ---
     # With flattened observation format:
@@ -470,8 +515,6 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
             reward_net.load_state_dict(state)
         except Exception as e:
             print(f"Warning: failed to load reward net: {e}")
-    profile = getattr(args, "risk_profile", None)
-    risk_score_value = profile.get("risk_score", getattr(args, "risk_score", 0.5)) if profile else getattr(args, "risk_score", 0.5)
     irl_trainer = MaxEntIRL(reward_net, expert_trajectories, lr=1e-4, risk_score=risk_score_value)
 
     # --- train ---

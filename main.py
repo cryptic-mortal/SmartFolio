@@ -260,6 +260,8 @@ if __name__ == '__main__':
                         help="Maximum acceptable drawdown (absolute fraction, e.g. 0.2 for 20%) for promotion")
     parser.add_argument("--run_monthly_fine_tune", action="store_true",
                         help="Run monthly fine-tuning using the manifest instead of full training")
+    parser.add_argument("--expert_cache_path", default=None,
+                        help="Optional path to cache expert trajectories for reuse")
     # Training hyperparameters
     parser.add_argument("--irl_epochs", type=int, default=50, help="Number of IRL training epochs")
     parser.add_argument("--rl_timesteps", type=int, default=10000, help="Number of RL timesteps for training")
@@ -331,6 +333,11 @@ if __name__ == '__main__':
     args.dd_base_weight = getattr(args, 'dd_base_weight', 1.0)
     args.dd_risk_factor = getattr(args, 'dd_risk_factor', 1.0)
     args.risk_profile = build_risk_profile(args.risk_score)
+    if not getattr(args, "expert_cache_path", None):
+        args.expert_cache_path = os.path.join(
+            "dataset_default",
+            "expert_cache"
+        )
     # ensure save dir
     os.makedirs(args.save_dir, exist_ok=True)
 
