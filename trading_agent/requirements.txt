@@ -1,0 +1,7 @@
+yfinance>=0.2.37
+pandas>=1.5
+typer>=0.9
+rich>=13
+openai>=1.40.0
+google-generativeai>=0.7.0
+vaderSentiment>=3.3.2
