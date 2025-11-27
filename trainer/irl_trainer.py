@@ -242,7 +242,7 @@ class MultiRewardNetwork(nn.Module):
             # Risk-adaptive kappa (optional): κ(ρ) = κ_max - (κ_max - κ_min) * ρ
             # Conservative (ρ=0) → high κ (ignore small drawdowns)
             # Aggressive (ρ=1) → low κ (penalize even small drawdowns)
-            kappa_adaptive = self.dd_kappa_max - (self.dd_kappa_max - self.dd_kappa_min) * risk_score
+            kappa_adaptive = self.dd_kappa_min + (self.dd_kappa_max - self.dd_kappa_min) * risk_score
             
             # Smooth penalty: -SoftPlus((dd - kappa) / tau)
             dd_scaled = (dd - kappa_adaptive) / self.dd_tau

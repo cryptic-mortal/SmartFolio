@@ -25,7 +25,7 @@ def build_risk_profile(risk_score: float) -> dict:
         _lerp(4.0, 2.0, rho),
     )
 
-    max_weight = _lerp(0.15, 0.45, rho)
+    max_weight = _lerp(0.10, 0.60, rho)
     min_weight = 0.005
 
     # Bias ensemble weights toward defensive (risk parity/HRP) when conservative

@@ -42,7 +42,7 @@ class StockPortfolioEnv(gym.Env):
         self.max_weight_cap = self.risk_profile.get('max_weight', None)
         self.min_weight_floor = self.risk_profile.get('min_weight', 0.0)
         # Conservative users (low score) get higher temperature to spread allocations
-        self.action_temperature = max(1e-3, 1.0 + (1.0 - self.risk_score))
+        self.action_temperature = 0.2 + 2.3 * (1.0 - self.risk_score)
 
         # Action space: continuous weights for each stock
         # Output raw scores, will be normalized via softmax to sum to 1
