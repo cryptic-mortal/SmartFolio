@@ -16,7 +16,7 @@ def _build_schema(columns: List[str]) -> type:
 
 
 def compute_rolling_mean_std_pathway(
-    df: pd.DataFrame, cal_cols: List[str], lookback_days: int
+    df: pd.DataFrame, cal_cols: List[str], lookback_days: int, *, max_rows: int = 50000
 ) -> pd.DataFrame:
     """
     Compute rolling mean/std per ticker using Pathway sliding windows.
@@ -31,6 +31,11 @@ def compute_rolling_mean_std_pathway(
     """
     if df.empty:
         return df
+
+    if len(df) > max_rows:
+        raise RuntimeError(
+            f"Pathway rolling disabled: len(df)={len(df)} exceeds max_rows={max_rows}"
+        )
 
     df_work = df.copy()
     original_dt_dtype = df_work["dt"].dtype

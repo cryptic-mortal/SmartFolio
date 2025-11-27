@@ -17,6 +17,7 @@ from trainer.irl_trainer import *
 from torch_geometric.loader import DataLoader
 from utils.risk_profile import build_risk_profile
 from tools.pathway_temporal import discover_monthly_shards_with_pathway
+from tools.pathway_monthly_builder import build_monthly_shards_with_pathway
 
 PATH_DATA = f'./dataset/'
 
@@ -61,7 +62,24 @@ def _infer_month_dates(shard):
 def fine_tune_month(args, manifest_path="monthly_manifest.json", bookkeeping_path=None):
     """Fine-tune the PPO model on the latest unprocessed monthly shard."""
     manifest_file = manifest_path
-    if not os.path.exists(manifest_file):
+    if not os.path.exists(manifest_file) and getattr(args, "discover_months_with_pathway", False):
+        # If manifest is missing, attempt to build it via Pathway monthly builder.
+        base_dir_guess = f'dataset_default/data_train_predict_{args.market}/{args.horizon}_{args.relation_type}/'
+        try:
+            shards = build_monthly_shards_with_pathway(
+                base_dir_guess,
+                manifest_file,
+                min_days=getattr(args, "min_month_days", 10),
+                cutoff_days=getattr(args, "month_cutoff_days", None),
+            )
+            print(
+                f"Built manifest at {manifest_file} with {len(shards)} monthly shards from {base_dir_guess}"
+            )
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"Monthly manifest not found at {manifest_file} and Pathway build failed: {exc}"
+            )
+    elif not os.path.exists(manifest_file):
         raise FileNotFoundError(f"Monthly manifest not found at {manifest_file}")
 
     with open(manifest_file, "r", encoding="utf-8") as fh:
@@ -76,14 +94,12 @@ def fine_tune_month(args, manifest_path="monthly_manifest.json", bookkeeping_pat
             f'dataset_default/data_train_predict_{args.market}/{args.horizon}_{args.relation_type}/',
         )
         try:
-            discovered = discover_monthly_shards_with_pathway(
-                base_dir_guess, min_days=getattr(args, "min_month_days", 10)
+            discovered = build_monthly_shards_with_pathway(
+                base_dir_guess,
+                manifest_file,
+                min_days=getattr(args, "min_month_days", 10),
+                cutoff_days=getattr(args, "month_cutoff_days", None),
             )
-        except Exception as exc:  # pragma: no cover - defensive for unexpected Pathway errors
-            print(f"Pathway month discovery failed: {exc}")
-            discovered = []
-
-        if discovered:
             shards = discovered
             manifest["monthly_shards"] = discovered
             manifest["base_dir"] = base_dir_guess
@@ -93,11 +109,8 @@ def fine_tune_month(args, manifest_path="monthly_manifest.json", bookkeeping_pat
                 f"Discovered {len(discovered)} monthly shards via Pathway windows; "
                 f"updated manifest at {manifest_file}"
             )
-        else:
-            print(
-                "Pathway month discovery did not produce any shards; "
-                "ensure daily files are named YYYY-MM-DD*.pkl"
-            )
+        except Exception as exc:  # pragma: no cover - defensive for unexpected Pathway errors
+            print(f"Pathway month discovery failed: {exc}")
     if not shards:
         raise ValueError("Manifest does not contain any 'monthly_shards'")
 
@@ -293,6 +306,8 @@ if __name__ == '__main__':
                         help="Run monthly fine-tuning using the manifest instead of full training")
     parser.add_argument("--discover_months_with_pathway", action="store_true",
                         help="When manifest lacks shards, group daily pickle files into monthly windows using Pathway")
+    parser.add_argument("--month_cutoff_days", type=int, default=None,
+                        help="Optional cutoff (days) to drop late daily files when building monthly shards via Pathway")
     parser.add_argument("--min_month_days", type=int, default=10,
                         help="Minimum number of daily files required to keep a discovered month window")
     parser.add_argument("--expert_cache_path", default=None,

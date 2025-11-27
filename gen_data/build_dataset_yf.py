@@ -95,21 +95,24 @@ def get_label(df: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
     return df
 
 
-def cal_rolling_mean_std(df: pd.DataFrame, cal_cols: List[str], lookback: int = 5) -> pd.DataFrame:
-    try:
-        return compute_rolling_mean_std_pathway(df, cal_cols, lookback)
-    except Exception as exc:
-        print(f"[warn] Pathway rolling failed ({exc}); falling back to pandas.")
-        df = df.sort_values(by=["kdcode", "dt"])  # sort by ticker, date
-        for col in cal_cols:
-            df[f"{col}_mean"] = df.groupby("kdcode")[col].transform(
-                lambda x: x.rolling(window=lookback, min_periods=1).mean()
-            )
-            df[f"{col}_std"] = df.groupby("kdcode")[col].transform(
-                lambda x: x.rolling(window=lookback, min_periods=1).std()
-            )
-        df = df.dropna().reset_index(drop=True)
-        return df
+def cal_rolling_mean_std(
+    df: pd.DataFrame, cal_cols: List[str], lookback: int = 5, use_pathway: bool = False
+) -> pd.DataFrame:
+    if use_pathway:
+        try:
+            return compute_rolling_mean_std_pathway(df, cal_cols, lookback)
+        except Exception as exc:
+            print(f"[warn] Pathway rolling failed ({exc}); falling back to pandas.")
+    df = df.sort_values(by=["kdcode", "dt"])  # sort by ticker, date
+    for col in cal_cols:
+        df[f"{col}_mean"] = df.groupby("kdcode")[col].transform(
+            lambda x: x.rolling(window=lookback, min_periods=1).mean()
+        )
+        df[f"{col}_std"] = df.groupby("kdcode")[col].transform(
+            lambda x: x.rolling(window=lookback, min_periods=1).std()
+        )
+    df = df.dropna().reset_index(drop=True)
+    return df
 
 
 def _zscore_safe(series: pd.Series) -> pd.Series:
@@ -422,6 +425,8 @@ def main():
     parser.add_argument("--no-norm", dest="norm", action="store_false", help="Disable feature normalization")
     parser.set_defaults(norm=True)
     parser.add_argument("--industry_mode", default="identity", choices=["identity", "full", "sector"], help="How to build industry matrix for non-CN markets")
+    parser.add_argument("--no-pathway-rolling", action="store_true", help="Disable Pathway rolling features; use pandas rolling instead")
+    parser.add_argument("--no-pathway-macro", action="store_true", help="Disable Pathway macro asof alignment")
     args = parser.parse_args()
 
     # Resolve tickers
@@ -466,7 +471,12 @@ def main():
 
     # 2) Labels and preprocessing
     df_lbl = get_label(df_raw, horizon=args.horizon)
-    df_roll = cal_rolling_mean_std(df_lbl, cal_cols=["close", "volume"], lookback=5)
+    df_roll = cal_rolling_mean_std(
+        df_lbl,
+        cal_cols=["close", "volume"],
+        lookback=5,
+        use_pathway=not args.no_pathway_rolling,
+    )
     df_norm = group_and_norm(
         df_roll,
         base_cols=["close_mean", "close_std", "volume_mean", "volume_std"],
@@ -476,7 +486,7 @@ def main():
     # Optional macro alignment: attach index_data/{market}_index.csv via asof_join if available
     idx_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset", "index_data"))
     idx_path = os.path.join(idx_dir, f"{args.market}_index.csv")
-    if os.path.exists(idx_path):
+    if os.path.exists(idx_path) and not args.no_pathway_macro:
         try:
             macro_df = pd.read_csv(idx_path)
             df_norm = asof_align_macro(df_norm, macro_df, suffix="macro_")
