@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import pandas as pd
 import torch
@@ -175,10 +176,39 @@ def train_and_predict(args, train_loader, test_loader):
 def model_predict(args, model, test_loader, split: str = "test"):
     """Run inference against the test loader and persist evaluation artefacts."""
 
-    df_benchmark = pd.read_csv(f"../dataset/index_data/{args.market}_index.csv")
-    df_benchmark = df_benchmark[(df_benchmark['date'] >= args.test_start_date) &
-                                (df_benchmark['date'] <= args.test_end_date)]
-    benchmark_return = df_benchmark['return']
+    index_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset", "index_data"))
+    benchmark_paths = [
+        os.path.join(index_dir, "nifty50_index.csv"),
+        os.path.join(index_dir, f"{args.market}_index.csv"),
+    ]
+
+    df_benchmark = None
+    benchmark_source = None
+    for path in benchmark_paths:
+        if os.path.exists(path):
+            try:
+                df_candidate = pd.read_csv(path)
+                df_benchmark = df_candidate
+                benchmark_source = path
+                break
+            except Exception as exc:
+                print(f"Warning: failed to load benchmark file {path}: {exc}")
+
+    benchmark_return = None
+    if df_benchmark is not None:
+        date_col = "datetime" if "datetime" in df_benchmark.columns else ("date" if "date" in df_benchmark.columns else None)
+        ret_col = "daily_return" if "daily_return" in df_benchmark.columns else ("return" if "return" in df_benchmark.columns else None)
+
+        if date_col and ret_col:
+            df_benchmark = df_benchmark.rename(columns={date_col: "datetime", ret_col: "daily_return"})
+            df_benchmark = df_benchmark[(df_benchmark['datetime'] >= args.test_start_date) &
+                                        (df_benchmark['datetime'] <= args.test_end_date)]
+            benchmark_return = df_benchmark['daily_return'].reset_index(drop=True)
+            print(f"Loaded benchmark series with {len(benchmark_return)} rows from {benchmark_source}")
+        else:
+            print("Warning: benchmark file missing expected date/return columns; skipping benchmark comparison.")
+    else:
+        print("Warning: no benchmark index file found; skipping benchmark comparison.")
 
     records = []
     env_snapshots = []
@@ -207,16 +237,18 @@ def model_predict(args, model, test_loader, split: str = "test"):
                 break
 
         env_instance = env_vec.envs[0]
-        arr, avol, sharpe, mdd, cr, ir = env_instance.evaluate()
-        metrics = {
-            "arr": arr,
-            "avol": avol,
-            "sharpe": sharpe,
-            "mdd": mdd,
-            "cr": cr,
-            "ir": ir,
+        metrics, benchmark_metrics = env_instance.evaluate()
+        metrics_record = {
+            "arr": metrics.get("arr"),
+            "avol": metrics.get("avol"),
+            "sharpe": metrics.get("sharpe"),
+            "mdd": metrics.get("mdd"),
+            "cr": metrics.get("cr"),
+            "ir": metrics.get("ir"),
         }
-        record = create_metric_record(args, split, metrics, batch_idx)
+        if benchmark_metrics:
+            metrics_record.update({f"benchmark_{k}": v for k, v in benchmark_metrics.items()})
+        record = create_metric_record(args, split, metrics_record, batch_idx)
         records.append(record)
         env_snapshots.append((env_test, record["run_id"]))
         env_vec.close()

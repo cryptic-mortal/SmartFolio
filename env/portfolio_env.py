@@ -143,14 +143,20 @@ class StockPortfolioEnv(gym.Env):
             if self.mode == "test":
                 print("=================================")
                 print(f"net_values:{self.net_value_s}")
-                arr, avol, sharpe, mdd, cr, ir = self.evaluate()
+                metrics, benchmark_metrics = self.evaluate()
 
-                print("ARR: ", arr)
-                print("AVOL: ", avol)
-                print("Sharpe: ", sharpe)
-                print("MDD: ", mdd)
-                print("CR: ", cr)
-                print("IR: ", ir)
+                print("ARR: ", metrics.get("arr"))
+                print("AVOL: ", metrics.get("avol"))
+                print("Sharpe: ", metrics.get("sharpe"))
+                print("MDD: ", metrics.get("mdd"))
+                print("CR: ", metrics.get("cr"))
+                print("IR: ", metrics.get("ir"))
+                if benchmark_metrics:
+                    print("Benchmark ARR: ", benchmark_metrics.get("arr"))
+                    print("Benchmark AVOL: ", benchmark_metrics.get("avol"))
+                    print("Benchmark Sharpe: ", benchmark_metrics.get("sharpe"))
+                    print("Benchmark MDD: ", benchmark_metrics.get("mdd"))
+                    print("Benchmark CR: ", benchmark_metrics.get("cr"))
                 print("=================================")
         else:
             # load s'
@@ -271,35 +277,61 @@ class StockPortfolioEnv(gym.Env):
         df.insert(0, 'step', self.dates)
         return df
 
+    def _compute_metrics(self, series: pd.Series) -> dict:
+        metrics = {"arr": 0.0, "avol": 0.0, "sharpe": 0.0, "mdd": 0.0, "cr": 0.0}
+        if series is None or len(series) == 0:
+            return metrics
+
+        metrics["arr"] = (1 + series.mean()) ** 252 - 1
+        metrics["avol"] = series.std() * (252 ** 0.5)
+        metrics["sharpe"] = (252 ** 0.5) * series.mean() / series.std() if series.std() != 0 else 0.0
+
+        cumulative = (1 + series).cumprod()
+        running_max = cumulative.cummax()
+        drawdown = cumulative / running_max - 1
+        metrics["mdd"] = drawdown.min() if not drawdown.empty else 0.0
+        metrics["cr"] = metrics["arr"] / abs(metrics["mdd"]) if metrics["mdd"] != 0 else 0.0
+        return metrics
+
     def evaluate(self):
-        arr, avol, sp, mdd, cr, ir = (0, 0, 0, 0, 0, 0)
         df_daily_return = self.get_df_daily_return()
-        if df_daily_return["daily_return"].std() != 0:
-            # Annualized return (ARR) assuming 252 trading days
-            arr = (1 + df_daily_return['daily_return'].mean()) ** 252 - 1
-            # Annualized volatility (AVOL)
-            avol = df_daily_return["daily_return"].std() * (252 ** 0.5)
-            sp = (
-                    (252 ** 0.5)
-                    * df_daily_return["daily_return"].mean()
-                    / df_daily_return["daily_return"].std()
-            )
-            # cumulative return
-            df_daily_return['cumulative_return'] = (1 + df_daily_return['daily_return']).cumprod()
-            # the running maximum
-            running_max = df_daily_return['cumulative_return'].cummax()
-            # drawdown
-            drawdown = df_daily_return['cumulative_return'] / running_max - 1
-            # Maximum Drawdown (MDD)
-            mdd = drawdown.min()
-            # Calmar Ratio (CR)
-            if mdd != 0:
-                cr = arr / abs(mdd)
-            # Information Ratio (IR) requires benchmark returns
-            if self.benchmark_return is not None:
-                if len(self.benchmark_return) == len(df_daily_return):
-                    ex_return = df_daily_return["daily_return"] -\
-                                self.benchmark_return.reset_index(drop=True)
-                    if ex_return.std() != 0:
-                        ir = ex_return.mean() / ex_return.std() * (252 ** 0.5)
-        return arr, avol, sp, mdd, cr, ir
+        portfolio_returns = df_daily_return["daily_return"].reset_index(drop=True)
+
+        # Drop the initial zero placeholder to align with benchmark length when present
+        if len(portfolio_returns) > 0 and portfolio_returns.iloc[0] == 0:
+            portfolio_returns = portfolio_returns.iloc[1:].reset_index(drop=True)
+
+        benchmark_series = None
+        if self.benchmark_return is not None:
+            if isinstance(self.benchmark_return, pd.DataFrame):
+                if "daily_return" in self.benchmark_return.columns:
+                    benchmark_series = self.benchmark_return["daily_return"]
+                elif "return" in self.benchmark_return.columns:
+                    benchmark_series = self.benchmark_return["return"]
+            elif isinstance(self.benchmark_return, pd.Series):
+                benchmark_series = self.benchmark_return
+            else:
+                benchmark_series = pd.Series(self.benchmark_return)
+
+            if benchmark_series is not None:
+                benchmark_series = pd.Series(benchmark_series).dropna().reset_index(drop=True)
+
+        portfolio_metrics = self._compute_metrics(portfolio_returns)
+        benchmark_metrics = {}
+
+        if benchmark_series is not None and not benchmark_series.empty and not portfolio_returns.empty:
+            aligned_len = min(len(portfolio_returns), len(benchmark_series))
+            portfolio_aligned = portfolio_returns.iloc[:aligned_len]
+            benchmark_aligned = benchmark_series.iloc[:aligned_len]
+
+            benchmark_metrics = self._compute_metrics(benchmark_aligned)
+
+            excess_return = portfolio_aligned - benchmark_aligned
+            if excess_return.std() != 0:
+                portfolio_metrics["ir"] = excess_return.mean() / excess_return.std() * (252 ** 0.5)
+            else:
+                portfolio_metrics["ir"] = 0.0
+        else:
+            portfolio_metrics["ir"] = 0.0
+
+        return portfolio_metrics, benchmark_metrics
