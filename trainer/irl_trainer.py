@@ -392,13 +392,20 @@ def model_predict(args, model, test_loader, split: str = "test"):
     log_info = persist_metrics(records, env_snapshots, args, split)
     summary = aggregate_metric_records(records)
 
-    if all_weights_data and log_info and 'log_dir' in log_info:
-        log_dir = log_info['log_dir']
+    if all_weights_data:
         timestamp_label = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
+        log_dir = None
+        if log_info and 'log_dir' in log_info:
+            log_dir = log_info['log_dir']
+        else:
+            log_dir = os.path.join("logs", "weights")
+            os.makedirs(log_dir, exist_ok=True)
+
         weights_csv_path = os.path.join(log_dir, f"{split}_weights_{timestamp_label}.csv")
         df_weights = pd.DataFrame(all_weights_data)
         df_weights.to_csv(weights_csv_path, index=False)
-        log_info['weights_csv'] = weights_csv_path
+        if log_info is not None:
+            log_info['weights_csv'] = weights_csv_path
 
         summary_weights = df_weights.groupby('ticker').agg({
             'weight': ['mean', 'std', 'min', 'max', 'count']
@@ -408,7 +415,8 @@ def model_predict(args, model, test_loader, split: str = "test"):
 
         summary_path = os.path.join(log_dir, f"{split}_weights_summary_{timestamp_label}.csv")
         summary_weights.to_csv(summary_path)
-        log_info['weights_summary'] = summary_path
+        if log_info is not None:
+            log_info['weights_summary'] = summary_path
 
     if summary:
         print(f"Evaluation summary for split='{split}': {summary}")
