@@ -20,7 +20,7 @@ from utils.risk_profile import build_risk_profile
 from tools.pathway_temporal import discover_monthly_shards_with_pathway
 from tools.pathway_monthly_builder import build_monthly_shards_with_pathway
 
-PATH_DATA = f'./dataset/'
+PATH_DATA = f'./dataset_default/'
 
 
 def load_finrag_prior(weights_path, num_stocks, tickers_csv="tickers.csv"):
@@ -141,25 +141,47 @@ def _infer_month_dates(shard):
 def fine_tune_month(args, manifest_path="monthly_manifest.json", bookkeeping_path=None):
     """Fine-tune the PPO model on the latest unprocessed monthly shard."""
     manifest_file = manifest_path
-    if not os.path.exists(manifest_file) and getattr(args, "discover_months_with_pathway", False):
-        # If manifest is missing, attempt to build it via Pathway monthly builder.
-        base_dir_guess = f'dataset_default/data_train_predict_{args.market}/{args.horizon}_{args.relation_type}/'
-        try:
-            shards = build_monthly_shards_with_pathway(
-                base_dir_guess,
-                manifest_file,
-                min_days=getattr(args, "min_month_days", 10),
-                cutoff_days=getattr(args, "month_cutoff_days", None),
-            )
-            print(
-                f"Built manifest at {manifest_file} with {len(shards)} monthly shards from {base_dir_guess}"
-            )
-        except Exception as exc:
-            raise FileNotFoundError(
-                f"Monthly manifest not found at {manifest_file} and Pathway build failed: {exc}"
-            )
-    elif not os.path.exists(manifest_file):
-        raise FileNotFoundError(f"Monthly manifest not found at {manifest_file}")
+    if not os.path.exists(manifest_file):
+        # Attempt to build manifest: first via Pathway, then via monthly dataset updater
+        built = False
+        if getattr(args, "discover_months_with_pathway", False):
+            base_dir_guess = f'dataset_default/data_train_predict_{args.market}/{args.horizon}_{args.relation_type}/'
+            try:
+                shards = build_monthly_shards_with_pathway(
+                    base_dir_guess,
+                    manifest_file,
+                    min_days=getattr(args, "min_month_days", 10),
+                    cutoff_days=getattr(args, "month_cutoff_days", None),
+                )
+                print(
+                    f"Built manifest at {manifest_file} with {len(shards)} monthly shards from {base_dir_guess}"
+                )
+                built = True
+            except Exception as exc:
+                print(f"Pathway build failed: {exc}")
+        if (not built):
+            try:
+                from gen_data import update_monthly_dataset
+                updater_args = argparse.Namespace(
+                    market=args.market,
+                    horizon=int(args.horizon),
+                    relation_type=args.relation_type,
+                    lookback=getattr(args, "lookback", 30),
+                    threshold=0.5,
+                    n_clusters=8,
+                    disable_norm=False,
+                    dataset_root=None,
+                    corr_root=None,
+                    raw_path=None,
+                    tickers_file=None,
+                )
+                print(f"Manifest missing; running monthly dataset updater to create {manifest_file}")
+                update_monthly_dataset.run(updater_args)
+                built = os.path.exists(manifest_file)
+            except Exception as exc:
+                print(f"Monthly dataset updater failed: {exc}")
+        if not built:
+            raise FileNotFoundError(f"Monthly manifest not found at {manifest_file} and auto-build failed")
 
     with open(manifest_file, "r", encoding="utf-8") as fh:
         manifest = json.load(fh)
@@ -366,7 +388,7 @@ if __name__ == '__main__':
     parser.add_argument("-device", "-d", default="cuda:0", help="gpu")
     parser.add_argument("-model_name", "-nm", default="SmartFolio", help="Model name used in checkpoints and logs")
     parser.add_argument("-horizon", "-hrz", default="1", help="Return prediction horizon in trading days")
-    parser.add_argument("-relation_type", "-rt", default="hy", help="Correlation relation type label")
+    parser.add_argument("-relation_type", "-rt", default="hy", help="Correlation relation type label (default: hy)")
     parser.add_argument("-ind_yn", "-ind", default="y", help="Enable industry relation graph")
     parser.add_argument("-pos_yn", "-pos", default="y", help="Enable momentum relation graph")
     parser.add_argument("-neg_yn", "-neg", default="y", help="Enable reversal relation graph")
@@ -421,7 +443,7 @@ if __name__ == '__main__':
     # Default training range (override via CLI if desired)
     args.device = "cuda:0" if torch.cuda.is_available() else "cpu"
     args.model_name = 'SmartFolio'
-    args.relation_type = 'hy'
+    args.relation_type = getattr(args, "relation_type", "hy") or "hy"
     args.train_start_date = '2020-01-06'
     args.train_end_date = '2023-01-31'
     args.val_start_date = '2023-02-01'

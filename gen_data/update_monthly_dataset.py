@@ -101,10 +101,32 @@ def _find_latest_raw_snapshot(root: str, market: str) -> str:
             candidates.append((os.path.getmtime(full), full))
 
     if not candidates:
-        raise FileNotFoundError(
-            "Unable to locate a parquet/pickle snapshot under dataset_default for market "
-            f"'{market}'. Pass --raw-path explicitly if the snapshot lives elsewhere."
-        )
+        # Fallback: try converting a CSV snapshot (e.g., custom_org.csv) to parquet
+        csv_candidates = []
+        for directory in search_dirs:
+            if not os.path.isdir(directory):
+                continue
+            for fname in os.listdir(directory):
+                if fname.lower().endswith(".csv") and "org" in fname.lower():
+                    csv_candidates.append(os.path.join(directory, fname))
+        if not csv_candidates:
+            raise FileNotFoundError(
+                "Unable to locate a parquet/pickle snapshot under dataset_default for market "
+                f"'{market}'. Pass --raw-path explicitly if the snapshot lives elsewhere."
+            )
+        csv_candidates.sort()
+        csv_path = csv_candidates[-1]
+        df_csv = pd.read_csv(csv_path)
+        required_cols = {"kdcode", "dt", "close", "open", "high", "low", "prev_close", "volume"}
+        missing = required_cols - set(df_csv.columns)
+        if missing:
+            raise ValueError(
+                f"CSV snapshot at {csv_path} missing required columns: {', '.join(sorted(missing))}"
+            )
+        parquet_path = os.path.join(os.path.dirname(csv_path), "custom_latest.parquet")
+        df_csv.to_parquet(parquet_path, index=False)
+        print(f"Converted CSV snapshot {csv_path} to parquet {parquet_path}")
+        return parquet_path
 
     candidates.sort()
     return candidates[-1][1]
@@ -386,10 +408,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Incrementally update monthly dataset shards.")
     parser.add_argument("--market", required=True, help="Market identifier used in dataset path.")
     parser.add_argument("--horizon", type=int, default=1, help="Forecast horizon used for labels.")
-    parser.add_argument("--relation-type", default="corr", help="Relation type directory suffix (default: corr).")
+    parser.add_argument("--relation-type", default="hy", help="Relation type directory suffix (default: hy).")
     parser.add_argument("--lookback", type=int, default=20, help="Rolling window size for features and correlations.")
-    parser.add_argument("--threshold", type=float, default=0.2, help="Threshold for positive/negative adjacency matrices.")
-    parser.add_argument("--n-clusters", type=int, default=8, help="Number of KMeans clusters for normalization stage.")
+    parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for positive/negative adjacency matrices.")
+    parser.add_argument("--n_clusters", type=int, default=8, help="Number of KMeans clusters for normalization stage.")
     parser.add_argument("--disable-norm", action="store_true", help="Use raw OHLCV instead of normalized features.")
     parser.add_argument("--dataset-root", default=None, help="Override dataset_default root directory.")
     parser.add_argument("--corr-root", default=None, help="Override correlation output directory.")

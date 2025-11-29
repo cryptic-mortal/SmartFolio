@@ -29,7 +29,7 @@ FEATURE_COLS_NORM = [f"{c}_normalized" for c in FEATURE_COLS]
 # Output root to match what main.py expects
 # main.py looks under dataset_default/data_train_predict_{market}/...
 DATASET_DEFAULT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset_default"))
-DATASET_CORR_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset", "corr"))
+DATASET_CORR_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset_default", "corr"))
 
 
 def fetch_ohlcv_yf(tickers: List[str], start: str, end: str) -> pd.DataFrame:
@@ -172,7 +172,7 @@ def get_relation_dt(str_year: str, str_month: str, stock_trade_dt_s: List[str]) 
     return relation_dt.strftime("%Y-%m-%d")
 
 
-def gen_mats_by_threshold(corr_df: pd.DataFrame, threshold: float = 0.2):
+def gen_mats_by_threshold(corr_df: pd.DataFrame, threshold: float = 0.5):
     mat = corr_df.values
     pos_adj = (mat > threshold).astype(np.float32)
     neg_adj = (mat < -threshold).astype(np.float32)
@@ -455,9 +455,9 @@ def main():
     df_raw.to_csv(org_out, index=False)
 
     # --- Create an index CSV (equal-weighted average daily return) for model_predict ---
-    # model_predict expects ./dataset/index_data/{market}_index_2024.csv with columns ['datetime','daily_return']
+    # model_predict expects ./dataset_default/index_data/{market}_index_2024.csv with columns ['datetime','daily_return']
     try:
-        idx_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset", "index_data"))
+        idx_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset_default", "index_data"))
         os.makedirs(idx_dir, exist_ok=True)
         # Use prev_close from df_raw to compute per-ticker daily return
         df_idx = df_raw.copy()
@@ -488,7 +488,7 @@ def main():
     )
 
     # Optional macro alignment: attach index_data/{market}_index.csv via asof_join if available
-    idx_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset", "index_data"))
+    idx_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset_default", "index_data"))
     idx_path = os.path.join(idx_dir, f"{args.market}_index.csv")
     if os.path.exists(idx_path) and not args.no_pathway_macro:
         try:
@@ -508,14 +508,14 @@ def main():
     codes = filter_code(df_all)
     print(f"Universe size after filtering for complete histories: {len(codes)}")
 
-    # 3) Monthly correlations (saved to dataset/corr/{market}/YYYY-MM-DD.csv)
+    # 3) Monthly correlations (saved to dataset_default/corr/{market}/YYYY-MM-DD.csv)
     print("Computing monthly correlation matrices...")
     compute_monthly_corrs(df_norm, market=args.market, lookback_days=args.lookback, out_root=DATASET_CORR_ROOT)
 
     # 4) Industry adjacency
     print(f"Building industry matrix mode={args.industry_mode} ...")
     ind_mat = build_industry_matrix(args.market, codes, mode=args.industry_mode)
-    ind_dir = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset")), args.market)
+    ind_dir = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "dataset_default")), args.market)
     os.makedirs(ind_dir, exist_ok=True)
     np.save(os.path.join(ind_dir, "industry.npy"), ind_mat)
 

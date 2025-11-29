@@ -216,7 +216,7 @@ class StockPortfolioEnv(gym.Env):
             step_return = np.dot(weights, np.array(self.ror))
             self.net_value *= (1 + step_return)
             self.peak_value = max(self.peak_value, self.net_value)
-            self.daily_return_s.append(self.reward)
+            self.daily_return_s.append(step_return)
             self.net_value_s.append(self.net_value)
 
         return self.observation, self.reward, self.done, {}

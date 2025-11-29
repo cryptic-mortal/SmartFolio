@@ -293,7 +293,7 @@ PPO_PARAMS = {
 
 
 def model_predict(args, model, test_loader, split: str = "test"):
-    df_benchmark = pd.read_csv(f"./dataset/index_data/{args.market}_index.csv")
+    df_benchmark = pd.read_csv(f"./dataset_default/index_data/{args.market}_index.csv")
     df_benchmark = df_benchmark[(df_benchmark['datetime'] >= args.test_start_date) &
                                 (df_benchmark['datetime'] <= args.test_end_date)]
     benchmark_return = df_benchmark['daily_return']
@@ -510,7 +510,7 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
             rl_timesteps = getattr(args, 'rl_timesteps', 10000)
             print(f"Training RL agent for {rl_timesteps} timesteps...")
             model = model.learn(total_timesteps=rl_timesteps)
-            mean_reward, std_reward = evaluate_policy(model, env_train, n_eval_episodes=1)
+            mean_reward, std_reward = evaluate_policy(model, env_train, n_eval_episodes=10)
             print(f"Evaluation after RL training: Mean Reward = {mean_reward:.4f}, Std Reward = {std_reward:.4f}")
 
         print("\n=== Intermediate Test Evaluation (after RL learn) ===")
