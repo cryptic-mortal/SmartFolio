@@ -22,3 +22,6 @@ dist/
 *.swo
 
 *_summary.md
+
+checkpoints/
+logs/
