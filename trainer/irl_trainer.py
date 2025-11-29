@@ -496,8 +496,6 @@ def train_model_and_predict(model, args, train_loader, val_loader, test_loader):
         print("reward net train over.")
 
         for batch_idx, data in enumerate(train_loader):
-            if batch_idx > 0:
-                break
             corr, ts_features, features, ind, pos, neg, labels, pyg_data, mask = process_data(data, device=args.device)
             env_train = StockPortfolioEnv(
                 args=args, corr=corr, ts_features=ts_features, features=features,
