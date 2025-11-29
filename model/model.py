@@ -43,26 +43,45 @@ class MHGraphAttn(Module):
 
     def forward(self, inputs, adj_mat, require_weights=False):
         batch = inputs.shape[0]
-        # avoid divide 0 error
-        adj_mat[torch.all(adj_mat == 0, dim=-1)] = 1e-6
+        
+        # 1. Linear Projection
         support = torch.matmul(inputs, self.weight)
         support = support.reshape(batch, -1, self.num_heads, self.out_features).permute(dims=(0, 2, 1, 3))
+        
+        # 2. Calculate Raw Scores (e_ij)
         f_1 = torch.matmul(support, self.weight_u).reshape(batch, self.num_heads, 1, -1)
         f_2 = torch.matmul(support, self.weight_v).reshape(batch, self.num_heads, -1, 1)
         logits = f_1 + f_2
-        weight = self.leaky_relu(logits)
-        masked_weight = torch.matmul(weight, adj_mat.unsqueeze(1)).to_sparse()
-        attn_weights = torch.sparse.softmax(masked_weight, dim=3).to_dense()
+        weight = self.leaky_relu(logits) 
+        
+        # 3. [FIX] Strict Masking
+        # We need to broadcast adj_mat to [Batch, Heads, N, N]
+        # adj_mat is [Batch, N, N] -> unsqueeze head dim -> [Batch, 1, N, N]
+        mask = adj_mat.unsqueeze(1)
+        
+        # Where mask == 0, set weight to -1e9 (Negative Infinity)
+        # This ensures Softmax(weight) = 0.0 for these edges.
+        # We use masked_fill for safety.
+        masked_weight = weight.masked_fill(mask == 0, -1e9)
+        
+        # 4. Softmax (Normalize)
+        attn_weights = torch.softmax(masked_weight, dim=3)
+        
+        # 5. Aggregate
         support = torch.matmul(attn_weights, support)
         support = support.permute(dims=(0, 2, 1, 3)).reshape(batch, -1, self.num_heads * self.out_features)
+        
         if self.bias is not None:
             support = support + self.bias
         if self.residual:
             support = support + self.project(inputs)
+            
         support = torch.tanh(support)
+        
         if require_weights:
             return support, attn_weights
-        return support, None
+        else:
+            return support, None
 
 
 class PairNorm(nn.Module):

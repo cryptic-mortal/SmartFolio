@@ -182,7 +182,7 @@ def gen_mats_by_threshold(corr_df: pd.DataFrame, threshold: float = 0.2):
     return pos_adj, neg_adj
 
 
-def compute_monthly_corrs(df: pd.DataFrame, market: str, lookback_days: int = 20, out_root: Optional[str] = None):
+def compute_monthly_corrs(df: pd.DataFrame, market: str, lookback_days: int = 21, out_root: Optional[str] = None):
     """Compute monthly correlation matrices on rolling window and save to dataset/corr/{market}/YYYY-MM-DD.csv.
 
     This replicates gen_data/generate_relation.py behavior.
